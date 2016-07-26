@@ -7,3 +7,5 @@ SPARK_HOME=/spark
 SPARK_CONF_DIR=$SPARK_HOME/conf
 # For Docker, always run start script as foreground
 JOBSERVER_FG=1
+# LOGGING
+LOG_DIR=/tmp

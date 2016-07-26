@@ -1,19 +1,17 @@
-import scalariform.formatter.preferences._
-
+import bintray.Plugin.bintrayPublishSettings
 import com.typesafe.sbt.SbtScalariform._
 import sbt.Keys._
-import sbt._
+import sbt.{Credentials, _}
 import sbtassembly.AssemblyPlugin.autoImport._
-import spray.revolver.RevolverPlugin._
-import com.typesafe.sbt.SbtScalariform._
-import scalariform.formatter.preferences._
-import bintray.Plugin.bintrayPublishSettings
 import scoverage.ScoverageKeys._
+
+import scalariform.formatter.preferences._
 
 // There are advantages to using real Scala build files with SBT:
 //  - Multi-JVM testing won't work without it, for now
 //  - You get full IDE support
 object JobServerBuild extends Build {
+
   lazy val dirSettings = Seq(
     unmanagedSourceDirectories in Compile <<= Seq(baseDirectory(_ / "src" )).join,
     unmanagedSourceDirectories in Test <<= Seq(baseDirectory(_ / "test" )).join,
@@ -62,6 +60,12 @@ object JobServerBuild extends Build {
                                       settings = commonSettings ++ jobServerTestJarSettings
                                      ) dependsOn(jobServerApi)
 
+  // copy dependencies with : mvn -f beam-job-server_2.11-0.6.2.pom clean dependency:copy-dependencies
+  // -DexcludeScope=provided -DexcludeGroupIds=spark.jobserver
+  lazy val beamJobServer = Project(id = "beam-job-server", base = file("beam-job-server"),
+                                      settings = commonSettings ++ beamSettings
+                                    ) dependsOn(jobServerApi)
+
   lazy val jobServerApi = Project(id = "job-server-api",
                                   base = file("job-server-api"),
                                   settings = commonSettings ++ publishSettings)
@@ -100,53 +104,81 @@ object JobServerBuild extends Build {
     exportJars := true        // use the jar instead of target/classes
   )
 
+  lazy val beamSettings = Seq(
+    libraryDependencies ++= beamJobServerDeps,
+    description := "Beam env in SJS",
+    resolvers += "Datastreams" at "http://newbuild.talend.com:8081/" +
+      "nexus/content/repositories/snapshots",
+    resolvers += "beam nightly" at "https://repository.apache.org/content/groups/snapshots/",
+    scalaVersion := "2.11.8",
+    copyJarsTask,
+    credentials += Credentials(Path.userHome / ".ivy2" / ".credentials")
+  )
+
   import sbtdocker.DockerKeys._
 
   lazy val dockerSettings = Seq(
     // Make the docker task depend on the assembly task, which generates a fat JAR file
     docker <<= (docker dependsOn (assembly in jobServerExtras)),
+    docker <<= (docker dependsOn ((Keys.`package` in Compile) in beamJobServer)),
+    docker <<= (docker dependsOn ((Keys.makePom in Compile) in beamJobServer)),
     dockerfile in docker := {
       val artifact = (outputPath in assembly in jobServerExtras).value
       val artifactTargetPath = s"/app/${artifact.name}"
+      val beamArtifact = (artifactPath in (Compile, packageBin) in beamJobServer).value
+      val beamArtifactTargetPath = s"/app/${beamArtifact.name}"
+      val pom = ((Keys.makePom in Compile) in beamJobServer).value
+      val pomPath = s"/app/${pom.name}"
       new sbtdocker.mutable.Dockerfile {
         from(s"java:${javaVersion}")
         // Dockerfile best practices: https://docs.docker.com/articles/dockerfile_best-practices/
         expose(8090)
-        expose(9999)    // for JMX
-        env("MESOS_VERSION", mesosVersion)
-        runRaw("""echo "deb http://repos.mesosphere.io/ubuntu/ trusty main" > /etc/apt/sources.list.d/mesosphere.list && \
-                  apt-key adv --keyserver keyserver.ubuntu.com --recv E56151BF && \
-                  apt-get -y update && \
-                  apt-get -y install mesos=${MESOS_VERSION} && \
-                  apt-get clean
-               """)
+        expose(9999)
+
         copy(artifact, artifactTargetPath)
+        copy(beamArtifact, beamArtifactTargetPath)
+        copy(pom, pomPath)
         copy(baseDirectory(_ / "bin" / "server_start.sh").value, file("app/server_start.sh"))
         copy(baseDirectory(_ / "bin" / "server_stop.sh").value, file("app/server_stop.sh"))
         copy(baseDirectory(_ / "bin" / "manager_start.sh").value, file("app/manager_start.sh"))
         copy(baseDirectory(_ / "bin" / "setenv.sh").value, file("app/setenv.sh"))
-        copy(baseDirectory(_ / "config" / "log4j-stdout.properties").value, file("app/log4j-server.properties"))
+        copy(baseDirectory(_ / "config" / "log4j-server.properties").value, file("app/log4j-server.properties"))
         copy(baseDirectory(_ / "config" / "docker.conf").value, file("app/docker.conf"))
+
+        // test yarn cluster mode
+        copy(baseDirectory(_ / "config" / "yarn.conf").value, file("app/docker.conf"))
+        copy(baseDirectory(_ / "config" / "core-site.xml").value, file("/cluster-config/core-site.xml"))
+        copy(baseDirectory(_ / "config" / "hdfs-site.xml").value, file("/cluster-config/hdfs-site.xml"))
+        copy(baseDirectory(_ / "config" / "yarn-site.xml").value, file("/cluster-config/yarn-site.xml"))
+        env("YARN_CONF_DIR", "/cluster-config")
+        env("HADOOP_CONF_DIR", "/cluster-config")
+
         copy(baseDirectory(_ / "config" / "docker.sh").value, file("app/settings.sh"))
+        copy(baseDirectory(_ / "beam-job-server" / "pom.xml").value, file("app/datastreams_pom.xml"))
+        copy(baseDirectory(_ / "beam-job-server" / "settings.xml").value, file("app/datastreams_settings.xml"))
+
+        // Resolve & download beam job server dependencies with mvn
+        runRaw("wget http://apache.mirrors.ovh.net/ftp.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz -O /opt/apache-maven-3.3.9-bin.tar.gz && cd /opt && tar -xzvf apache-maven-3.3.9-bin.tar.gz && mkdir -p /opt/datastreams-deps  && /opt/apache-maven-3.3.9/bin/mvn -s /app/datastreams_settings.xml -f /app/datastreams_pom.xml clean dependency:copy-dependencies -DoutputDirectory=/opt/datastreams-deps")
+
         // Including envs in Dockerfile makes it easy to override from docker command
         env("JOBSERVER_MEMORY", "1G")
         env("SPARK_HOME", "/spark")
-        env("SPARK_BUILD", s"spark-${sparkVersion}-bin-hadoop2.4")
+        env("SPARK_BUILD", s"spark-${sparkVersion}-bin-hadoop2.6")
         // Use a volume to persist database between container invocations
         run("mkdir", "-p", "/database")
-        runRaw("""wget http://d3kbcqa49mib13.cloudfront.net/$SPARK_BUILD.tgz && \
-                  tar -xvf $SPARK_BUILD.tgz && \
-                  mv $SPARK_BUILD /spark && \
-                  rm $SPARK_BUILD.tgz
-               """)
+
+        // Download and install spark
+        // runRaw("wget \"https://talend365-my.sharepoint.com/personal/amarouni_talend_com/_layouts/15/guestaccess.aspx?guestaccesstoken=rvL4igFEB61xrZJj154bhOQCTbWDe4l4QgFhiHSluWI%3d&docid=0e108980753554592a0efeb365726b1ea&rev=1\" -O /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz && tar -xvf /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz -C /tmp && mv /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11 /spark && rm /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz")
+        copy(baseDirectory(_ / "datastreams-deps/" / "spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz").value, file("/tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz"))
+        runRaw("tar -xvf /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz -C /tmp && mv /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11 /spark && rm /tmp/spark-1.6.2-bin-hadoop-2.6-scala-2.11.tgz")
         volume("/database")
         entryPoint("app/server_start.sh")
       }
     },
     imageNames in docker := Seq(
-      sbtdocker.ImageName(namespace = Some("velvia"),
+      sbtdocker.ImageName(namespace = Some("talend"),
                           repository = "spark-jobserver",
-                          tag = Some(s"${version.value}.mesos-${mesosVersion.split('-')(0)}.spark-${sparkVersion}"))
+                          tag = Some(s"${version.value}-datastreams-0.1.0"))
     )
   )
 
@@ -186,7 +218,7 @@ object JobServerBuild extends Build {
     organization := "spark.jobserver",
     crossPaths   := true,
     crossScalaVersions := Seq("2.10.6","2.11.8"),
-    scalaVersion := "2.10.6",
+    scalaVersion := "2.11.8",
     publishTo    := Some(Resolver.file("Unused repo", file("target/unusedrepo"))),
 
     // scalastyleFailOnError := true,
@@ -237,4 +269,13 @@ object JobServerBuild extends Build {
   // This is here so we can easily switch back to Logback when Spark fixes its log4j dependency.
   lazy val jobServerLogbackLogging = "-Dlogback.configurationFile=config/logback-local.xml"
   lazy val jobServerLogging = "-Dlog4j.configuration=config/log4j-local.properties"
+
+  val copyJars = TaskKey[Unit]("copyJars", "Copy all dependency jars to target/lib")
+  val  copyJarsTask = copyJars := {
+    val files: Seq[File] = (fullClasspath in Compile).value.files.filter( !_.isDirectory)
+    //files.foreach(println)
+    //println("file=" + file("segmenthandler/target"))
+    files.foreach( f => IO.copyFile(f, file("beamDeps/" + f.getName())))
+  }
+
 }

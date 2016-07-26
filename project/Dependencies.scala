@@ -1,3 +1,4 @@
+import sbt.Keys._
 import sbt._
 
 object Dependencies {
@@ -35,7 +36,7 @@ object Dependencies {
     yammerDeps
   ) ++ jodaDeps
 
-  val javaVersion = sys.env.getOrElse("JAVA_VERSION", "7-jre")
+  val javaVersion = sys.env.getOrElse("JAVA_VERSION", "8")
 
   val mesosVersion = sys.env.getOrElse("MESOS_VERSION", "0.28.1-2.0.20.ubuntu1404")
 
@@ -72,6 +73,16 @@ object Dependencies {
 
   lazy val securityDeps = Seq(
      "org.apache.shiro" % "shiro-core" % "1.2.4"
+  )
+
+  /**
+    * IMPORTANT : Don't forget to update dependencies in the pom.xml at the project's root
+    * The pom.xml & settings.xml are used to pull beamJobServerDeps when building the docker
+    * image.
+    */
+  lazy val beamJobServerDeps = Seq(
+    "org.talend.datastreams" % "beam-compiler" % "0.1.0-SNAPSHOT" % "provided",
+    "org.apache.beam" % "beam-runners-spark" % "0.3.0-incubating-SNAPSHOT" % "provided"
   )
 
   lazy val serverDeps = apiDeps ++ jodaDeps
