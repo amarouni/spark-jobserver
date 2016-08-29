@@ -156,7 +156,7 @@ object JobServerBuild extends Build {
         copy(baseDirectory(_ / "config" / "docker.sh").value, file("app/settings.sh"))
         copy(baseDirectory(_ / "beam-job-server" / "pom.xml").value, file("app/datastreams_pom.xml"))
         copy(baseDirectory(_ / "beam-job-server" / "settings.xml").value, file("app/datastreams_settings.xml"))
-
+        
         // Resolve & download beam job server dependencies with mvn
         runRaw("wget http://apache.mirrors.ovh.net/ftp.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz -O /opt/apache-maven-3.3.9-bin.tar.gz && cd /opt && tar -xzvf apache-maven-3.3.9-bin.tar.gz && mkdir -p /opt/datastreams-deps  && /opt/apache-maven-3.3.9/bin/mvn -s /app/datastreams_settings.xml -f /app/datastreams_pom.xml clean dependency:copy-dependencies -DoutputDirectory=/opt/datastreams-deps")
 

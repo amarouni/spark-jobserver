@@ -1,5 +1,6 @@
 package spark.jobserver
 
+import java.io.File
 import java.util.concurrent.Executors._
 
 import akka.actor.{ActorRef, PoisonPill, Props}
@@ -401,7 +402,30 @@ class JobManagerActor(contextConfig: Config) extends InstrumentedActor {
   // They are loaded from the context/job config.
   // Each one should be an URL (http, ftp, hdfs, local, or file). local URLs are local files
   // present on every node, whereas file:// will be assumed only present on driver node
-  private def getSideJars(config: Config): Seq[String] =
-    Try(config.getStringList("dependent-jar-uris").asScala.toSeq).
-     orElse(Try(config.getString("dependent-jar-uris").split(",").toSeq)).getOrElse(Nil)
+  private def getSideJars(config: Config): Seq[String] = {
+    val dependentJarURIs: Seq[String] = Try(config.getStringList("dependent-jar-uris").asScala.toSeq).
+      orElse(Try(config.getString("dependent-jar-uris").split(",").toSeq)).getOrElse(Nil)
+
+    expandDependentJarFolders(dependentJarURIs)
+  }
+
+  // Generates dependent-jar-uirs with folders repalced by their content
+  // The folders should be present on the driver node and prefixed with the file scheme (i.e file:/myjars)
+  // Doesn't inspect folders in folder  (not recursive)
+  private def expandDependentJarFolders(dependentJarURIs: Seq[String]): Seq[String] = {
+
+    val expandedDependentJarURIs: Seq[String] = dependentJarURIs
+      .map(new URI(_))
+      .filter(_.getScheme.equalsIgnoreCase("file"))
+      .map(new File(_))
+      .filter(x => x.exists && x.isDirectory)
+      .flatMap(_.listFiles())
+      .filter(!_.isDirectory)
+      .map(x => new URI("file", null, x.getAbsolutePath, null).toString)
+
+    val excludedJarFolders: Seq[String] = dependentJarURIs
+      .filterNot(x => new URI(x).getScheme.equalsIgnoreCase("file") && new File(new URI(x)).isDirectory)
+
+    excludedJarFolders ++ expandedDependentJarURIs
+  }
 }
