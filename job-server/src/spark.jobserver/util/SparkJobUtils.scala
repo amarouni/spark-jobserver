@@ -26,7 +26,9 @@ object SparkJobUtils {
   def configToSparkConf(config: Config, contextConfig: Config,
                         contextName: String): SparkConf = {
 
-    val sparkMaster = SparkMasterProvider.fromConfig(config).getSparkMaster(config)
+    val sparkMaster = SparkMasterProvider
+      .fromConfig(config, contextConfig)
+      .getSparkMaster(config, contextConfig)
 
     val conf = new SparkConf()
     conf
